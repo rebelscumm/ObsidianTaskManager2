@@ -4,10 +4,10 @@
     <selectionStates>
       <SelectionState runConfigName="ObsidianTaskManager">
         <option name="selectionMode" value="DROPDOWN" />
-        <DropdownSelection timestamp="2025-01-05T01:03:21.602257300Z">
+        <DropdownSelection timestamp="2025-03-10T00:19:42.871450200Z">
           <Target type="DEFAULT_BOOT">
             <handle>
-              <DeviceId pluginId="PhysicalDevice" identifier="serial=4d3ad900" />
+              <DeviceId pluginId="LocalEmulator" identifier="path=C:\Users\jmeng\.android\avd\Pixel_9_API_35.avd" />
             </handle>
           </Target>
         </DropdownSelection>
