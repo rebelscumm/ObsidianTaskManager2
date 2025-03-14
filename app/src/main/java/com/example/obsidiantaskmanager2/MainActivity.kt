@@ -64,6 +64,9 @@ import android.content.pm.ShortcutInfo
 import android.graphics.drawable.Icon as ShortcutIcon
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
+import androidx.compose.material.icons.filled.LocalOffer
 
 /**
  * ButtonPressCounter:
@@ -352,6 +355,19 @@ data class HistoryItem(
     val oldTask: TaskLine
 )
 
+enum class ButtonType {
+    SNOOZE,
+    OTHER
+}
+
+data class DynamicButton(
+    val id: String, // unique identifier (for example "10m", "High Priority", etc.)
+    val label: String,
+    val type: ButtonType,
+    val durationInMinutes: Int?, // set a value for snooze buttons (e.g., 10 for "10m") or null otherwise
+    val onClick: () -> Unit
+)
+
 /**
  * MainActivity that demonstrates the UI and logic in one file.
  */
@@ -393,6 +409,66 @@ class MainActivity : ComponentActivity() {
                     .setIntent(shortcutIntent)
                     .build()
                 shortcutManager.requestPinShortcut(shortcutInfo, null)
+            }
+        }
+    }
+}
+
+// Add doAddTag helper function (to modify a task by appending a new tag)
+fun doAddTag(
+    reviewer: MarkdownReviewer,
+    selectedTask: TaskLine?,
+    history: MutableList<HistoryItem>,
+    tag: String,
+    refresh: () -> Unit
+) {
+    if (selectedTask != null) {
+        val oldCopy = selectedTask.copy()
+        val tagWithHash = "#$tag"
+        // Only add the tag if not already present
+        val newText = if (selectedTask.text.contains(tagWithHash)) {
+            selectedTask.text
+        } else {
+            "${selectedTask.text} $tagWithHash"
+        }
+        selectedTask.text = newText
+        val indexInReviewer = reviewer.lines.indexOf(selectedTask)
+        history.add(HistoryItem(indexInReviewer, oldCopy))
+        reviewer.saveLine(selectedTask, newText)
+        refresh()
+    }
+}
+
+// Create a TagMenu composable that shows a dropdown with tag options.
+// (Make sure also to import the icon for tags: androidx.compose.material.icons.filled.LocalOffer)
+@Composable
+fun TagMenu(
+    availableTags: List<String> = listOf("drive", "errand", "household", "Jean", "Clara", "Clyde", "Charlie"),
+    onTagSelected: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }) {
+            Icon(
+                imageVector = Icons.Default.LocalOffer,
+                contentDescription = "Tag Menu",
+                tint = Color.Yellow // Use yellow for high contrast against dark backgrounds
+            )
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier
+                .background(Color.Black) // Use a black background for higher contrast
+        ) {
+            availableTags.forEach { tag ->
+                DropdownMenuItem(
+                    text = { Text("#$tag", color = Color.White) }, // White text for better readability
+                    onClick = {
+                        expanded = false
+                        onTagSelected(tag)
+                    }
+                )
             }
         }
     }
@@ -665,7 +741,7 @@ fun MainScreen(initialOpenNewTask: Boolean = false) {
                                 dateFilter = if (newValue.isNotEmpty()) "all" else "today_or_before"
                                 refreshTasks()
                             },
-                            options = listOf("", "Jean", "Clara", "Clyde", "Charlie", "golf", "obsidian")
+                            options = listOf("", "drive", "golf", "errand", "household", "Jean", "Clara", "Clyde", "Charlie", "obsidian")
                         )
                     }
 
@@ -882,6 +958,16 @@ fun MainScreen(initialOpenNewTask: Boolean = false) {
                         },
                         onRemoveAllPriorities = {
                             doRemoveAllPriorities(reviewer, historyStack, ::refreshTasks)
+                        },
+                        // NEW: Provide the onAddTag lambda – note that we retrieve the selectedTask as before.
+                        onAddTag = { tag ->
+                            doAddTag(
+                                reviewer,
+                                getSelectedTask(reviewer, selectedFilePathAndLine),
+                                historyStack,
+                                tag,
+                                ::refreshTasks
+                            )
                         },
                         reviewer = reviewer,
                         openNewTaskDialogInitial = initialOpenNewTask
@@ -1332,25 +1418,18 @@ fun BottomButtons(
     onHighPriority: () -> Unit,
     onRemovePriority: () -> Unit,
     onRemoveAllPriorities: () -> Unit,
+    // New callback for adding a tag:
+    onAddTag: (String) -> Unit,
     reviewer: MarkdownReviewer,
     openNewTaskDialogInitial: Boolean = false
 ) {
-    // Get the context to launch any intent actions.
     val context = LocalContext.current
-
-    // Use the parameter for the initial state
     var showNewTaskDialog by remember { mutableStateOf(openNewTaskDialogInitial) }
-    // New state for report dialog
     var showReportDialog by remember { mutableStateOf(false) }
-    var newTaskText by remember { mutableStateOf("") }
-    
-    // New state variable for task priority (High, Normal, Low) with Normal as default
+    var newTaskText by remember { mutableStateOf(TextFieldValue("")) }
     var selectedPriority by remember { mutableStateOf(TaskPriority.Normal) }
-    
-    // Get ClipboardManager from Compose
     val clipboardManager = LocalClipboardManager.current
 
-    // If the dialog is visible, create a FocusRequester and show the keyboard
     if (showNewTaskDialog) {
         val focusRequester = remember { FocusRequester() }
         val keyboardController = LocalSoftwareKeyboardController.current
@@ -1368,8 +1447,8 @@ fun BottomButtons(
                         value = newTaskText,
                         onValueChange = { newTaskText = it },
                         trailingIcon = {
-                            if (newTaskText.isNotEmpty()) {
-                                IconButton(onClick = { newTaskText = "" }) {
+                            if (newTaskText.text.isNotEmpty()) {
+                                IconButton(onClick = { newTaskText = TextFieldValue("") }) {
                                     Icon(
                                         imageVector = Icons.Default.Clear,
                                         contentDescription = "Clear new task text"
@@ -1425,10 +1504,10 @@ fun BottomButtons(
                 TextButton(
                     onClick = {
                         showNewTaskDialog = false
-                        if (newTaskText.isNotBlank()) {
+                        if (newTaskText.text.isNotBlank()) {
                             doAddNewTask(
                                 reviewer = reviewer,
-                                taskText = newTaskText,
+                                taskText = newTaskText.text,
                                 priority = selectedPriority
                             )
                             onRefresh()
@@ -1446,15 +1525,17 @@ fun BottomButtons(
         )
 
         LaunchedEffect(showNewTaskDialog) {
-            if (showNewTaskDialog) {
-                kotlinx.coroutines.delay(100)
-                focusRequester.requestFocus()
-                keyboardController?.show()
+            if (newTaskText.text.isNotEmpty()) {
+                newTaskText = newTaskText.copy(
+                    selection = TextRange(0, newTaskText.text.length)
+                )
             }
+            delay(100) // slight delay to help request focus
+            focusRequester.requestFocus()
+            keyboardController?.show()
         }
     }
 
-    // New AlertDialog for the Report function
     if (showReportDialog) {
         AlertDialog(
             onDismissRequest = { showReportDialog = false },
@@ -1479,12 +1560,12 @@ fun BottomButtons(
     }
 
     Column {
-        // First row => "10m 30m 1h 7h"
+        // First row: Added snooze options "2h" and "4h"
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-            val firstRowOptions = listOf("10m", "30m", "1h", "3h")
+            val firstRowOptions = listOf("10m", "30m", "1h", "2h", "3h", "4h")
             firstRowOptions.forEach { option ->
                 ElevatedButton(onClick = {
                     ButtonPressCounter.increment(context, option)
@@ -1505,7 +1586,7 @@ fun BottomButtons(
 
         Spacer(Modifier.height(4.dp))
 
-        // Second row => "1d 2d 4d 7d"
+        // Second row: "1d", "2d", "4d", "7d"
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly
@@ -1526,7 +1607,7 @@ fun BottomButtons(
 
         Spacer(Modifier.height(4.dp))
 
-        // Combined row for "Mon", "Fri", "1p", "4p", and the Overflow menu.
+        // Third row: "Mon", "Fri", "1p", "4p", and the Overflow menu.
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly
@@ -1569,9 +1650,7 @@ fun BottomButtons(
             }
             Box {
                 var expanded by remember { mutableStateOf(false) }
-                IconButton(
-                    onClick = { expanded = true }
-                ) {
+                IconButton(onClick = { expanded = true }) {
                     Icon(
                         imageVector = Icons.Default.MoreVert,
                         contentDescription = "Overflow menu",
@@ -1726,10 +1805,10 @@ fun BottomButtons(
                 }
             }
         }
-
+        
         Spacer(Modifier.height(4.dp))
-
-        // Row containing "New" and "Completed"
+        
+        // Row containing "New Task" and "Completed"
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly
@@ -1738,7 +1817,7 @@ fun BottomButtons(
                 modifier = Modifier.height(96.dp),
                 onClick = {
                     // Use clipboard content as default if not empty.
-                    newTaskText = clipboardManager.getText()?.text ?: ""
+                    newTaskText = TextFieldValue(clipboardManager.getText()?.text ?: "")
                     showNewTaskDialog = true
                 },
                 colors = ButtonDefaults.elevatedButtonColors(containerColor = Color(0xFFFFC107))
@@ -1784,10 +1863,10 @@ fun BottomButtons(
                 }
             }
         }
-
+        
         Spacer(Modifier.height(4.dp))
-
-        // Weekly snooze row
+        
+        // (Optional) Second weekly snooze row (if still needed)
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly
@@ -1802,6 +1881,18 @@ fun BottomButtons(
                 }
             }
         }
+        
+        Spacer(Modifier.height(4.dp))
+        
+        // NEW: Row for the Tag Menu – this will display an icon that expands to list the tags.
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center
+        ) {
+            TagMenu(onTagSelected = onAddTag)
+        }
+        
+        Spacer(Modifier.height(4.dp))
     }
 }
 

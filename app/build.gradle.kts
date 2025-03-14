@@ -41,7 +41,7 @@ android {
 }
 
 dependencies {
-dependencies
+    dependencies
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -62,4 +62,5 @@ dependencies
     implementation("androidx.activity:activity-ktx:1.8.2")
     implementation("androidx.core:core-ktx:1.9.0")
     implementation("androidx.core:core:1.9.0")
+    implementation("androidx.compose.material:material-icons-extended:1.4.3")
 }
