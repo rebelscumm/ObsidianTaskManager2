@@ -355,19 +355,6 @@ data class HistoryItem(
     val oldTask: TaskLine
 )
 
-enum class ButtonType {
-    SNOOZE,
-    OTHER
-}
-
-data class DynamicButton(
-    val id: String, // unique identifier (for example "10m", "High Priority", etc.)
-    val label: String,
-    val type: ButtonType,
-    val durationInMinutes: Int?, // set a value for snooze buttons (e.g., 10 for "10m") or null otherwise
-    val onClick: () -> Unit
-)
-
 /**
  * MainActivity that demonstrates the UI and logic in one file.
  */
@@ -1430,6 +1417,30 @@ fun BottomButtons(
     var selectedPriority by remember { mutableStateOf(TaskPriority.Normal) }
     val clipboardManager = LocalClipboardManager.current
 
+    val allCounts = ButtonPressCounter.getAllCounts(context)
+
+    // Sort dynamic buttons by usage (highest count first)
+    val buttonsByFrequency = dynamicButtons.sortedByDescending { allCounts[it.id] ?: 0 }
+
+    // Select the 20 most common buttons
+    val prioritizedButtons = buttonsByFrequency.take(20)
+
+    // Separate prioritized buttons into snooze and other types
+    val prioritizedSnoozeButtons = prioritizedButtons.filter { it.type == ButtonType.SNOOZE }
+        // For snooze buttons with a duration, sort them in ascending order of duration;
+        // if duration is null, push those to the end.
+        .sortedWith(compareBy({ it.durationInMinutes ?: Int.MAX_VALUE }))
+
+    val prioritizedOtherButtons = prioritizedButtons.filter { it.type == ButtonType.OTHER }
+
+    // Combine back if you wish to display them in one row:
+    val displayButtons = prioritizedSnoozeButtons + prioritizedOtherButtons
+
+    // Prepare overflow lists (those not in the top 20)
+    val overflowButtons = dynamicButtons.filter { it !in prioritizedButtons }
+    val overflowSnooze = overflowButtons.filter { it.type == ButtonType.SNOOZE }
+    val overflowOther = overflowButtons.filter { it.type == ButtonType.OTHER }
+
     if (showNewTaskDialog) {
         val focusRequester = remember { FocusRequester() }
         val keyboardController = LocalSoftwareKeyboardController.current
@@ -2180,4 +2191,57 @@ fun doRemoveAllPriorities(
         }
     }
     refresh()
+}
+
+// Define an enum to represent the type of button.
+enum class ButtonType {
+    SNOOZE,
+    OTHER
+}
+
+// Data class for dynamic buttons.
+data class DynamicButton(
+    val id: String,
+    val type: ButtonType,
+    val durationInMinutes: Int? = null // For snooze buttons, etc.
+)
+
+// Define your list of dynamic buttons.
+val dynamicButtons = listOf(
+    DynamicButton("10m", ButtonType.SNOOZE, 10),
+    DynamicButton("30m", ButtonType.SNOOZE, 30),
+    DynamicButton("1h", ButtonType.SNOOZE, 60),
+    DynamicButton("2h", ButtonType.SNOOZE, 120),
+    DynamicButton("3h", ButtonType.SNOOZE, 180),
+    DynamicButton("4h", ButtonType.SNOOZE, 240),
+    // Other buttons might be declared as "OTHER"
+    DynamicButton("Mon", ButtonType.OTHER),
+    DynamicButton("Fri", ButtonType.OTHER),
+    DynamicButton("1p", ButtonType.OTHER),
+    DynamicButton("4p", ButtonType.OTHER),
+    DynamicButton("7 Hours", ButtonType.OTHER),
+    DynamicButton("7p", ButtonType.OTHER),
+    DynamicButton("3 Days", ButtonType.OTHER),
+    DynamicButton("5 Days", ButtonType.OTHER),
+    DynamicButton("3 Weeks", ButtonType.OTHER),
+    DynamicButton("5 Weeks", ButtonType.OTHER),
+    DynamicButton("26 Weeks", ButtonType.OTHER),
+    DynamicButton("High Priority", ButtonType.OTHER),
+    DynamicButton("Remove Priority", ButtonType.OTHER),
+    DynamicButton("Remove All Priorities", ButtonType.OTHER),
+    DynamicButton("Delete", ButtonType.OTHER),
+    DynamicButton("Add New Task Shortcut", ButtonType.OTHER),
+    DynamicButton("Report", ButtonType.OTHER)
+)
+
+fun backgroundColorForButton(button: DynamicButton): Color {
+    return when {
+        button.type != ButtonType.SNOOZE -> Color.LightGray
+        // For snooze buttons, try to deduce the unit based on duration in minutes.
+        button.durationInMinutes == null -> Color.Gray
+        button.durationInMinutes < 60 -> Color(0xFFFFD54F) // minutes (yellowish)
+        button.durationInMinutes in 60 until 1440 -> Color(0xFFEF5350) // hours (redish)
+        button.durationInMinutes in 1440 until 10080 -> Color(0xFF66BB6A) // days (greenish)
+        else -> Color(0xFF42A5F5) // weeks or more (blueish)
+    }
 }
