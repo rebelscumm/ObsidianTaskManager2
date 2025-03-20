@@ -61,12 +61,20 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.platform.LocalClipboardManager
 import android.content.pm.ShortcutInfo
+import androidx.compose.foundation.lazy.LazyRow
 import android.graphics.drawable.Icon as ShortcutIcon
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.TextRange
 import androidx.compose.material.icons.filled.LocalOffer
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import androidx.core.view.WindowCompat
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 
 /**
  * ButtonPressCounter:
@@ -345,6 +353,59 @@ class MarkdownReviewer(
     fun getDirectoryPath(): String {
         return directoryPath
     }
+
+    fun addNewTask(taskText: String, priority: TaskPriority = TaskPriority.Normal) {
+        val directory = File(directoryPath)
+        if (!directory.exists() || !directory.isDirectory) {
+            Toast.makeText(context, "Directory does not exist", Toast.LENGTH_SHORT).show()
+            return
+        }
+        // Try to find an existing markdown file (skipping hidden files)
+        val mdFiles = directory.listFiles { file ->
+            !file.name.startsWith(".") && file.extension.equals("md", ignoreCase = true)
+        }
+        // If none is found, create a "tasks.md" file in the directory.
+        val file = if (mdFiles.isNullOrEmpty()) {
+            File(directory, "tasks.md")
+        } else {
+            mdFiles.sortedBy { it.name }[0]
+        }
+        // Prepare today's date string.
+        val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+        
+        // Start with the raw trimmed task text.
+        var formattedTask = taskText.trim()
+        
+        // Ensure the task has the "[ ]" marker; if not, add it at the beginning.
+        if (!formattedTask.contains("[ ]")) {
+            formattedTask = "* [ ] " + formattedTask
+        }
+        
+        // Build the priority marker string (if any).
+        val priorityMarker = if (priority != TaskPriority.Normal) {
+            when (priority) {
+                TaskPriority.High -> "⏫"
+                TaskPriority.Low -> "🔽"
+                else -> ""
+            }
+        } else {
+            ""
+        }
+        
+        // Append the priority marker (if any) before the date marker at the end.
+        if (!formattedTask.contains("📅")) {
+            if (priorityMarker.isNotEmpty()) {
+                formattedTask += " $priorityMarker"
+            }
+            formattedTask += " 📅 $todayStr"
+        }
+        
+        // Read the current file content (if any) and prepend the new task.
+        val existingContent = if (file.exists()) file.readText() else ""
+        val newContent = formattedTask + "\n" + existingContent
+        file.writeText(newContent)
+        Toast.makeText(context, "New task added", Toast.LENGTH_SHORT).show()
+    }
 }
 
 /**
@@ -365,7 +426,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // Disable edge-to-edge mode by NOT calling enableEdgeToEdge().
+        // Either remove the following line or replace it with:
+        WindowCompat.setDecorFitsSystemWindows(window, true)
+        
+        window.decorView.setBackgroundColor(Color(0xFF2d2d2d).toArgb())
 
         // Check if this is the first run and create the shortcut if needed.
         val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
@@ -430,27 +495,30 @@ fun doAddTag(
 // (Make sure also to import the icon for tags: androidx.compose.material.icons.filled.LocalOffer)
 @Composable
 fun TagMenu(
-    availableTags: List<String> = listOf("drive", "errand", "household", "Jean", "Clara", "Clyde", "Charlie"),
+    availableTags: List<String> = listOf("drive", "dictate", "errand", "household", "Jean", "Clara", "Clyde", "Charlie", ),
     onTagSelected: (String) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        IconButton(onClick = { expanded = true }) {
+        // Use a Button with the same color as snoozes/functions overflow to open the tag menu
+        Button(
+            onClick = { expanded = true },
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF121212))
+        ) {
             Icon(
                 imageVector = Icons.Default.LocalOffer,
                 contentDescription = "Tag Menu",
-                tint = Color.Yellow // Use yellow for high contrast against dark backgrounds
+                tint = Color.White
             )
         }
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            modifier = Modifier
-                .background(Color.Black) // Use a black background for higher contrast
+            modifier = Modifier.background(Color(0xFF121212))
         ) {
             availableTags.forEach { tag ->
                 DropdownMenuItem(
-                    text = { Text("#$tag", color = Color.White) }, // White text for better readability
+                    text = { Text("#$tag", color = Color.White) },
                     onClick = {
                         expanded = false
                         onTagSelected(tag)
@@ -491,7 +559,7 @@ fun MainScreen(initialOpenNewTask: Boolean = false) {
     // --- New state variables for editing ---
     var showEditDialog by remember { mutableStateOf(false) }
     var editingTask by remember { mutableStateOf<TaskLine?>(null) }
-    var editTaskText by remember { mutableStateOf("") }
+    var editTaskText by remember { mutableStateOf(TextFieldValue("")) }
 
     // Declare directoryLauncher as a lateinit variable
     lateinit var directoryLauncher: ActivityResultLauncher<Uri?>
@@ -643,6 +711,17 @@ fun MainScreen(initialOpenNewTask: Boolean = false) {
 
         // --- Display the edit dialog if needed ---
         if (showEditDialog) {
+            // Create a FocusRequester for the edit dialog text field.
+            val editFocusRequester = remember { FocusRequester() }
+
+            // When the dialog is shown, request focus and select all text.
+            LaunchedEffect(Unit) {
+                editFocusRequester.requestFocus()
+                editTaskText = editTaskText.copy(
+                    selection = TextRange(0, editTaskText.text.length)
+                )
+            }
+
             AlertDialog(
                 onDismissRequest = { showEditDialog = false },
                 title = { Text("Edit Task") },
@@ -652,7 +731,8 @@ fun MainScreen(initialOpenNewTask: Boolean = false) {
                         Spacer(modifier = Modifier.height(8.dp))
                         OutlinedTextField(
                             value = editTaskText,
-                            onValueChange = { editTaskText = it }
+                            onValueChange = { editTaskText = it },
+                            modifier = Modifier.focusRequester(editFocusRequester)
                         )
                     }
                 },
@@ -660,12 +740,12 @@ fun MainScreen(initialOpenNewTask: Boolean = false) {
                     TextButton(
                         onClick = {
                             editingTask?.let { task ->
-                                // Save changes if the dialog's text was modified.
-                                task.text = editTaskText
-                                reviewer.saveLine(task, editTaskText)
+                                // Save changes using edited text.
+                                task.text = editTaskText.text
+                                reviewer.saveLine(task, editTaskText.text)
                             }
                             showEditDialog = false
-                            refreshTasks() // Refresh tasks to update the list
+                            refreshTasks() // Refresh tasks to update the list.
                         }
                     ) {
                         Text("OK")
@@ -685,283 +765,273 @@ fun MainScreen(initialOpenNewTask: Boolean = false) {
         )
         val charFilterOptions = listOf("", "✅", "⏫", "🔽", "🔽")
 
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Obsidian Task Manager") },
-                    actions = {}
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(8.dp)
+                .background(Color(0xFF2d2d2d))
+        ) {
+            // Filters
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Date filter dropdown
+                FilterDropdown(
+                    label = "Date Filter",
+                    options = dateFilterOptions,
+                    selected = dateFilter,
+                    onSelectedChange = {
+                        dateFilter = it
+                        refreshTasks()
+                    }
                 )
-            },
-            content = { padding ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding)
-                        .background(Color(0xFF2d2d2d))
-                ) {
-                    // Filters
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // Date filter dropdown
-                        FilterDropdown(
-                            label = "Date Filter",
-                            options = dateFilterOptions,
-                            selected = dateFilter,
-                            onSelectedChange = {
-                                dateFilter = it
-                                refreshTasks()
-                            }
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        // Replaced "Char Filter" dropdown with a searchable/dropdown input.
-                        SearchableDropdown(
-                            label = "[Search]",
-                            value = charFilter,
-                            onValueChange = { newValue ->
-                                charFilter = newValue
-                                // If search box is not empty, force date filter to all;
-                                // if cleared, reset to "today_or_before"
-                                dateFilter = if (newValue.isNotEmpty()) "all" else "today_or_before"
-                                refreshTasks()
-                            },
-                            options = listOf("", "drive", "golf", "errand", "household", "Jean", "Clara", "Clyde", "Charlie", "obsidian")
-                        )
+                Spacer(Modifier.width(8.dp))
+                // Replaced "Char Filter" dropdown with a searchable/dropdown input.
+                SearchableDropdown(
+                    label = "[Search]",
+                    value = charFilter,
+                    onValueChange = { newValue ->
+                        charFilter = newValue
+                        // If search box is not empty, force date filter to all;
+                        // if cleared, reset to "today_or_before"
+                        dateFilter = if (newValue.isNotEmpty()) "all" else "today_or_before"
+                        refreshTasks()
+                    },
+                    options = listOf("", "drive", "dictate", "golf", "errand", "household", "Jean", "Clara", "Clyde", "Charlie", "obsidian", )
+                )
+            }
+
+            // Exclude Hourly Snooze Checkbox
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = excludeHourlySnooze,
+                    onCheckedChange = {
+                        excludeHourlySnooze = it
+                        refreshTasks()
                     }
+                )
+                Text(text = "Exclude Hourly Snooze", color = Color.White)
+            }
 
-                    // Exclude Hourly Snooze Checkbox
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Checkbox(
-                            checked = excludeHourlySnooze,
-                            onCheckedChange = {
-                                excludeHourlySnooze = it
-                                refreshTasks()
-                            }
-                        )
-                        Text(text = "Exclude Hourly Snooze", color = Color.White)
-                    }
+            // Item count
+            Text(
+                text = "Items: ${filteredTasks.size}",
+                color = Color.White,
+                modifier = Modifier.padding(start = 16.dp, bottom = 4.dp)
+            )
 
-                    // Item count
-                    Text(
-                        text = "Items: ${filteredTasks.size}",
-                        color = Color.White,
-                        modifier = Modifier.padding(start = 16.dp, bottom = 4.dp)
-                    )
+            // Task List
+            val scope = rememberCoroutineScope()
+            val focusManager = LocalFocusManager.current
 
-                    // Task List
-                    val scope = rememberCoroutineScope()
-                    val focusManager = LocalFocusManager.current
-
-                    LaunchedEffect(filteredTasks) {
-                        if (selectedFilePathAndLine == null && filteredTasks.isNotEmpty()) {
-                            selectedFilePathAndLine =
-                                filteredTasks.first().filePath to filteredTasks.first().lineIndex
-                            println("Auto-selected first item: ${selectedFilePathAndLine?.second}")
-                        }
-                    }
-
-                    LazyColumn(modifier = Modifier.weight(1f)) {
-                        items(filteredTasks) { taskLine ->
-                            val bgColor = when {
-                                taskLine.text.contains("⏫") -> Color.Red.copy(alpha = 0.4f)
-                                taskLine.text.contains("🔽") -> Color.Green.copy(alpha = 0.4f)
-                                else -> Color.Transparent
-                            }
-
-                            val isSelected = (taskLine.filePath == selectedFilePathAndLine?.first &&
-                                    taskLine.lineIndex == selectedFilePathAndLine?.second)
-
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(if (isSelected) Color.White else bgColor)
-                                    .combinedClickable(
-                                        onClick = {
-                                            selectedFilePathAndLine = taskLine.filePath to taskLine.lineIndex
-                                            println("Item selected: ${selectedFilePathAndLine?.second}")
-                                        },
-                                        onDoubleClick = {
-                                            val urlRegex = Regex("https?://\\S+")
-                                            val match = urlRegex.find(taskLine.text)
-                                            match?.let {
-                                                val url = it.value
-                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                                                    addCategory(Intent.CATEGORY_BROWSABLE)
-                                                }
-                                                context.startActivity(Intent.createChooser(intent, "Open with"))
-                                            }
-                                        },
-                                        onLongClick = {
-                                            editingTask = taskLine
-                                            editTaskText = taskLine.text
-                                            showEditDialog = true
-                                        }
-                                    )
-                                    .padding(8.dp)
-                            ) {
-                                Text(
-                                    text = taskLine.text,
-                                    color = if (isSelected) Color.Black else Color.White,
-                                    style = MaterialTheme.typography.bodyLarge.copy(
-                                        fontFamily = FontFamily.Default,
-                                        letterSpacing = (-0.2).sp
-                                    )
-                                )
-                            }
-                        }
-                    }
-
-                    // Function to update the selected task
-                    fun selectNextTask(nextTask: TaskLine?) {
-                        selectedFilePathAndLine = nextTask?.let { it.filePath to it.lineIndex }
-                    }
-
-                    // Bottom Buttons
-                    BottomButtons(
-                        getSelectedTask = { selectedFilePathAndLine ->
-                            getSelectedTask(reviewer, selectedFilePathAndLine)
-                        },
-                        onSnoozeHours = { h ->
-                            doSnoozeHours(
-                                h,
-                                reviewer,
-                                getSelectedTask(reviewer, selectedFilePathAndLine),
-                                historyStack,
-                                ::refreshTasks,
-                                ::selectNextTask,
-                                dateFilter,
-                                charFilter,
-                                excludeHourlySnooze
-                            )
-                        },
-                        onSnoozeDays = { d ->
-                            doSnoozeDays(
-                                d,
-                                reviewer,
-                                getSelectedTask(reviewer, selectedFilePathAndLine),
-                                historyStack,
-                                ::refreshTasks,
-                                ::selectNextTask,
-                                dateFilter,
-                                charFilter,
-                                excludeHourlySnooze
-                            )
-                        },
-                        onSnoozeMinutes = { m ->
-                            doSnoozeMinutes(
-                                m,
-                                reviewer,
-                                getSelectedTask(reviewer, selectedFilePathAndLine),
-                                historyStack,
-                                ::refreshTasks,
-                                ::selectNextTask,
-                                dateFilter,
-                                charFilter,
-                                excludeHourlySnooze
-                            )
-                        },
-                        onSnoozeTo1p = {
-                            doSnoozeToSpecificTime(
-                                13, 0,
-                                reviewer,
-                                getSelectedTask(reviewer, selectedFilePathAndLine),
-                                historyStack,
-                                ::refreshTasks,
-                                ::selectNextTask,
-                                dateFilter,
-                                charFilter,
-                                excludeHourlySnooze
-                            )
-                        },
-                        onSnoozeTo4p = {
-                            doSnoozeToSpecificTime(
-                                16, 0,
-                                reviewer,
-                                getSelectedTask(reviewer, selectedFilePathAndLine),
-                                historyStack,
-                                ::refreshTasks,
-                                ::selectNextTask,
-                                dateFilter,
-                                charFilter,
-                                excludeHourlySnooze
-                            )
-                        },
-                        onSnoozeTo7p = {
-                            doSnoozeToSpecificTime(
-                                19, 0,
-                                reviewer,
-                                getSelectedTask(reviewer, selectedFilePathAndLine),
-                                historyStack,
-                                ::refreshTasks,
-                                ::selectNextTask,
-                                dateFilter,
-                                charFilter,
-                                excludeHourlySnooze
-                            )
-                        },
-                        onCompleted = {
-                            doMarkCompleted(
-                                reviewer,
-                                getSelectedTask(reviewer, selectedFilePathAndLine),
-                                historyStack,
-                                ::refreshTasks
-                            )
-                        },
-                        onUndo = { doUndo(reviewer, historyStack, ::refreshTasks) },
-                        onRefresh = { refreshTasks() },
-                        onDelete = {
-                            doDeleteTask(
-                                reviewer,
-                                getSelectedTask(reviewer, selectedFilePathAndLine),
-                                historyStack,
-                                ::refreshTasks
-                            )
-                        },
-                        onHighPriority = {
-                            doChangePriority(
-                                "⏫",
-                                reviewer,
-                                getSelectedTask(reviewer, selectedFilePathAndLine),
-                                historyStack,
-                                ::refreshTasks
-                            )
-                        },
-                        onRemovePriority = {
-                            doChangePriority(
-                                "remove",
-                                reviewer,
-                                getSelectedTask(reviewer, selectedFilePathAndLine),
-                                historyStack,
-                                ::refreshTasks
-                            )
-                        },
-                        onRemoveAllPriorities = {
-                            doRemoveAllPriorities(reviewer, historyStack, ::refreshTasks)
-                        },
-                        // NEW: Provide the onAddTag lambda – note that we retrieve the selectedTask as before.
-                        onAddTag = { tag ->
-                            doAddTag(
-                                reviewer,
-                                getSelectedTask(reviewer, selectedFilePathAndLine),
-                                historyStack,
-                                tag,
-                                ::refreshTasks
-                            )
-                        },
-                        reviewer = reviewer,
-                        openNewTaskDialogInitial = initialOpenNewTask
-                    )
+            LaunchedEffect(filteredTasks) {
+                if (selectedFilePathAndLine == null && filteredTasks.isNotEmpty()) {
+                    selectedFilePathAndLine =
+                        filteredTasks.first().filePath to filteredTasks.first().lineIndex
+                    println("Auto-selected first item: ${selectedFilePathAndLine?.second}")
                 }
             }
-        )
+
+            LazyColumn(modifier = Modifier.weight(1f)) {
+                items(filteredTasks) { taskLine ->
+                    val bgColor = when {
+                        taskLine.text.contains("⏫") -> Color.Red.copy(alpha = 0.4f)
+                        taskLine.text.contains("🔽") -> Color.Green.copy(alpha = 0.4f)
+                        else -> Color.Transparent
+                    }
+
+                    val isSelected = (taskLine.filePath == selectedFilePathAndLine?.first &&
+                            taskLine.lineIndex == selectedFilePathAndLine?.second)
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(if (isSelected) Color.White else bgColor)
+                            .combinedClickable(
+                                onClick = {
+                                    selectedFilePathAndLine = taskLine.filePath to taskLine.lineIndex
+                                    println("Item selected: ${selectedFilePathAndLine?.second}")
+                                },
+                                onDoubleClick = {
+                                    val urlRegex = Regex("https?://\\S+")
+                                    val match = urlRegex.find(taskLine.text)
+                                    match?.let {
+                                        val url = it.value
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                            addCategory(Intent.CATEGORY_BROWSABLE)
+                                        }
+                                        context.startActivity(Intent.createChooser(intent, "Open with"))
+                                    }
+                                },
+                                onLongClick = {
+                                    editingTask = taskLine
+                                    editTaskText = TextFieldValue(taskLine.text)  // initialize with the existing text
+                                    showEditDialog = true
+                                }
+                            )
+                            .padding(8.dp)
+                    ) {
+                        Text(
+                            text = taskLine.text,
+                            color = if (isSelected) Color.Black else Color.White,
+                            style = MaterialTheme.typography.bodyLarge.copy(
+                                fontFamily = FontFamily.Default,
+                                letterSpacing = (-0.2).sp
+                            )
+                        )
+                    }
+                }
+            }
+
+            // Function to update the selected task
+            fun selectNextTask(nextTask: TaskLine?) {
+                selectedFilePathAndLine = nextTask?.let { it.filePath to it.lineIndex }
+            }
+
+            // Bottom Buttons
+            BottomButtons(
+                getSelectedTask = { selectedFilePathAndLine ->
+                    getSelectedTask(reviewer, selectedFilePathAndLine)
+                },
+                onSnoozeHours = { h ->
+                    doSnoozeHours(
+                        h,
+                        reviewer,
+                        getSelectedTask(reviewer, selectedFilePathAndLine),
+                        historyStack,
+                        ::refreshTasks,
+                        ::selectNextTask,
+                        dateFilter,
+                        charFilter,
+                        excludeHourlySnooze
+                    )
+                },
+                onSnoozeDays = { d ->
+                    doSnoozeDays(
+                        d,
+                        reviewer,
+                        getSelectedTask(reviewer, selectedFilePathAndLine),
+                        historyStack,
+                        ::refreshTasks,
+                        ::selectNextTask,
+                        dateFilter,
+                        charFilter,
+                        excludeHourlySnooze
+                    )
+                },
+                onSnoozeMinutes = { m ->
+                    doSnoozeMinutes(
+                        m,
+                        reviewer,
+                        getSelectedTask(reviewer, selectedFilePathAndLine),
+                        historyStack,
+                        ::refreshTasks,
+                        ::selectNextTask,
+                        dateFilter,
+                        charFilter,
+                        excludeHourlySnooze
+                    )
+                },
+                onSnoozeTo1p = {
+                    doSnoozeToSpecificTime(
+                        13, 0,
+                        reviewer,
+                        getSelectedTask(reviewer, selectedFilePathAndLine),
+                        historyStack,
+                        ::refreshTasks,
+                        ::selectNextTask,
+                        dateFilter,
+                        charFilter,
+                        excludeHourlySnooze
+                    )
+                },
+                onSnoozeTo4p = {
+                    doSnoozeToSpecificTime(
+                        16, 0,
+                        reviewer,
+                        getSelectedTask(reviewer, selectedFilePathAndLine),
+                        historyStack,
+                        ::refreshTasks,
+                        ::selectNextTask,
+                        dateFilter,
+                        charFilter,
+                        excludeHourlySnooze
+                    )
+                },
+                onSnoozeTo7p = {
+                    doSnoozeToSpecificTime(
+                        19, 0,
+                        reviewer,
+                        getSelectedTask(reviewer, selectedFilePathAndLine),
+                        historyStack,
+                        ::refreshTasks,
+                        ::selectNextTask,
+                        dateFilter,
+                        charFilter,
+                        excludeHourlySnooze
+                    )
+                },
+                onCompleted = {
+                    doMarkCompleted(
+                        reviewer,
+                        getSelectedTask(reviewer, selectedFilePathAndLine),
+                        historyStack,
+                        ::refreshTasks
+                    )
+                },
+                onUndo = { doUndo(reviewer, historyStack, ::refreshTasks) },
+                onRefresh = { refreshTasks() },
+                onDelete = {
+                    doDeleteTask(
+                        reviewer,
+                        getSelectedTask(reviewer, selectedFilePathAndLine),
+                        historyStack,
+                        ::refreshTasks
+                    )
+                },
+                onHighPriority = {
+                    doChangePriority(
+                        "⏫",
+                        reviewer,
+                        getSelectedTask(reviewer, selectedFilePathAndLine),
+                        historyStack,
+                        ::refreshTasks
+                    )
+                },
+                onRemovePriority = {
+                    doChangePriority(
+                        "remove",
+                        reviewer,
+                        getSelectedTask(reviewer, selectedFilePathAndLine),
+                        historyStack,
+                        ::refreshTasks
+                    )
+                },
+                onRemoveAllPriorities = {
+                    doRemoveAllPriorities(reviewer, historyStack, ::refreshTasks)
+                },
+                // NEW: Provide the onAddTag lambda – note that we retrieve the selectedTask as before.
+                onAddTag = { tag ->
+                    doAddTag(
+                        reviewer,
+                        getSelectedTask(reviewer, selectedFilePathAndLine),
+                        historyStack,
+                        tag,
+                        ::refreshTasks
+                    )
+                },
+                reviewer = reviewer,
+                openNewTaskDialogInitial = initialOpenNewTask
+            )
+        }
     }
 }
 
@@ -1387,8 +1457,12 @@ fun FilterDropdown(
 /**
  * Bottom row of buttons for snooze, priority, etc.
  */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, 
-       androidx.compose.ui.ExperimentalComposeUiApi::class)
+@OptIn(
+    ExperimentalMaterial3Api::class,
+    ExperimentalFoundationApi::class,
+    ExperimentalComposeUiApi::class,
+    ExperimentalLayoutApi::class
+)
 @Composable
 fun BottomButtons(
     getSelectedTask: (selectedFilePathAndLine: Pair<String, Int>?) -> TaskLine?,
@@ -1405,7 +1479,6 @@ fun BottomButtons(
     onHighPriority: () -> Unit,
     onRemovePriority: () -> Unit,
     onRemoveAllPriorities: () -> Unit,
-    // New callback for adding a tag:
     onAddTag: (String) -> Unit,
     reviewer: MarkdownReviewer,
     openNewTaskDialogInitial: Boolean = false
@@ -1414,428 +1487,212 @@ fun BottomButtons(
     var showNewTaskDialog by remember { mutableStateOf(openNewTaskDialogInitial) }
     var showReportDialog by remember { mutableStateOf(false) }
     var newTaskText by remember { mutableStateOf(TextFieldValue("")) }
-    var selectedPriority by remember { mutableStateOf(TaskPriority.Normal) }
     val clipboardManager = LocalClipboardManager.current
 
-    val allCounts = ButtonPressCounter.getAllCounts(context)
+    // --- New Dynamic Button Ordering Based on Frequency ---
+    // Get the frequency counts for every button (using ButtonPressCounter)
+    val counts = ButtonPressCounter.getAllCounts(context)
+    // Change the limit from 16 to 18 to allow two extra dynamic buttons.
+    val topButtons = dynamicButtons.sortedByDescending { counts[it.id] ?: 0 }.take(18)
 
-    // Sort dynamic buttons by usage (highest count first)
-    val buttonsByFrequency = dynamicButtons.sortedByDescending { allCounts[it.id] ?: 0 }
+    // Among the top buttons, filter the snooze buttons and sort them by ascending duration.
+    val mainSnoozes = topButtons.filter { it.type == ButtonType.SNOOZE }
+        .sortedWith(compareBy(
+            { dynamicButtonSortKey(it).first },
+            { dynamicButtonSortKey(it).second },
+            { dynamicButtonSortKey(it).third }
+        ))
+    // The remaining top buttons (type OTHER—the functions) are sorted by id.
+    val mainFunctions = topButtons.filter { it.type == ButtonType.OTHER }
+        .sortedBy { it.id }
+    // The buttons to show in the main row are the snoozes (first) followed by the functions.
+    val displayButtons = mainSnoozes + mainFunctions
 
-    // Select the 20 most common buttons
-    val prioritizedButtons = buttonsByFrequency.take(20)
+    // For the overflow menus, take any dynamic buttons not in the top group.
+    val overflowSnoozes = dynamicButtons.filter { it.type == ButtonType.SNOOZE && it !in topButtons }
+    val overflowFunctions = dynamicButtons.filter { it.type == ButtonType.OTHER && it !in topButtons }
 
-    // Separate prioritized buttons into snooze and other types
-    val prioritizedSnoozeButtons = prioritizedButtons.filter { it.type == ButtonType.SNOOZE }
-        // For snooze buttons with a duration, sort them in ascending order of duration;
-        // if duration is null, push those to the end.
-        .sortedWith(compareBy({ it.durationInMinutes ?: Int.MAX_VALUE }))
+    // State variables for the dropdown menus.
+    var showSnoozeOverflow by remember { mutableStateOf(false) }
+    var showOtherOverflow by remember { mutableStateOf(false) }
 
-    val prioritizedOtherButtons = prioritizedButtons.filter { it.type == ButtonType.OTHER }
-
-    // Combine back if you wish to display them in one row:
-    val displayButtons = prioritizedSnoozeButtons + prioritizedOtherButtons
-
-    // Prepare overflow lists (those not in the top 20)
-    val overflowButtons = dynamicButtons.filter { it !in prioritizedButtons }
-    val overflowSnooze = overflowButtons.filter { it.type == ButtonType.SNOOZE }
-    val overflowOther = overflowButtons.filter { it.type == ButtonType.OTHER }
-
-    if (showNewTaskDialog) {
-        val focusRequester = remember { FocusRequester() }
-        val keyboardController = LocalSoftwareKeyboardController.current
-
-        AlertDialog(
-            onDismissRequest = { showNewTaskDialog = false },
-            title = { Text("New Task") },
-            text = {
-                Column(
-                    modifier = Modifier.focusRequester(focusRequester)
-                ) {
-                    Text("Enter the text for your new task:")
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = newTaskText,
-                        onValueChange = { newTaskText = it },
-                        trailingIcon = {
-                            if (newTaskText.text.isNotEmpty()) {
-                                IconButton(onClick = { newTaskText = TextFieldValue("") }) {
-                                    Icon(
-                                        imageVector = Icons.Default.Clear,
-                                        contentDescription = "Clear new task text"
-                                    )
-                                }
-                            }
-                        }
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    // Priority selection with three options: High, Normal, Low
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Priority:", color = Color.Black)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.clickable { selectedPriority = TaskPriority.High }
-                        ) {
-                            RadioButton(
-                                selected = selectedPriority == TaskPriority.High,
-                                onClick = { selectedPriority = TaskPriority.High }
-                            )
-                            Text("High", color = Color.Black)
-                        }
-                        Spacer(modifier = Modifier.width(16.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.clickable { selectedPriority = TaskPriority.Normal }
-                        ) {
-                            RadioButton(
-                                selected = selectedPriority == TaskPriority.Normal,
-                                onClick = { selectedPriority = TaskPriority.Normal }
-                            )
-                            Text("Normal", color = Color.Black)
-                        }
-                        Spacer(modifier = Modifier.width(16.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.clickable { selectedPriority = TaskPriority.Low }
-                        ) {
-                            RadioButton(
-                                selected = selectedPriority == TaskPriority.Low,
-                                onClick = { selectedPriority = TaskPriority.Low }
-                            )
-                            Text("Low", color = Color.Black)
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showNewTaskDialog = false
-                        if (newTaskText.text.isNotBlank()) {
-                            doAddNewTask(
-                                reviewer = reviewer,
-                                taskText = newTaskText.text,
-                                priority = selectedPriority
-                            )
-                            onRefresh()
-                        }
-                    }
-                ) {
-                    Text("OK")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showNewTaskDialog = false }) {
-                    Text("Cancel")
-                }
+    // Local helper function to map a dynamic button to its onClick action.
+    fun handleDynamicButtonClick(button: DynamicButton) {
+        ButtonPressCounter.increment(context, button.id)
+        when (button.id) {
+            "10m", "30m" -> onSnoozeMinutes(button.durationInMinutes ?: 0)
+            "1h", "2h", "3h", "4h", "7h" -> { // Add "7h" here.
+                val hours = button.id.dropLast(1).toIntOrNull() ?: 0
+                onSnoozeHours(hours)
             }
-        )
-
-        LaunchedEffect(showNewTaskDialog) {
-            if (newTaskText.text.isNotEmpty()) {
-                newTaskText = newTaskText.copy(
-                    selection = TextRange(0, newTaskText.text.length)
-                )
-            }
-            delay(100) // slight delay to help request focus
-            focusRequester.requestFocus()
-            keyboardController?.show()
-        }
-    }
-
-    if (showReportDialog) {
-        AlertDialog(
-            onDismissRequest = { showReportDialog = false },
-            title = { Text("Button Press Report") },
-            text = {
-                val counts = ButtonPressCounter.getAllCounts(context)
-                val sortedCounts = counts.entries.sortedByDescending { it.value }
-                Text(
-                    text = if (sortedCounts.isEmpty()) {
-                        "No button presses recorded."
+            "1d" -> onSnoozeDays(1)
+            "2d" -> onSnoozeDays(2)
+            "3d" -> onSnoozeDays(3)
+            "4d" -> onSnoozeDays(4)
+            "5d" -> onSnoozeDays(5)
+            "6d" -> onSnoozeDays(6)
+            "1w" -> onSnoozeDays(7) // Added case for "1w"
+            "2w" -> onSnoozeDays(14)
+            "3w" -> onSnoozeDays(21)
+            "5w" -> onSnoozeDays(35)
+            "8w" -> onSnoozeDays(56)
+            "12w" -> onSnoozeDays(84)
+            "26w" -> onSnoozeDays(182)
+            "Mon" -> onSnoozeDays(nextDayOfWeek(Calendar.MONDAY))
+            "Fri" -> onSnoozeDays(nextDayOfWeek(Calendar.FRIDAY))
+            "1p" -> onSnoozeTo1p()
+            "4p" -> onSnoozeTo4p()
+            "7p" -> onSnoozeTo7p()
+            "High Priority" -> onHighPriority()
+            "Remove Priority" -> onRemovePriority()
+            "Remove All Priorities" -> onRemoveAllPriorities()
+            "Delete" -> onDelete()
+            "Add New Task Shortcut" -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    val shortcutManager = context.getSystemService(ShortcutManager::class.java)
+                    if (shortcutManager.isRequestPinShortcutSupported) {
+                        val shortcutIntent = Intent(context, MainActivity::class.java).apply {
+                            action = Intent.ACTION_VIEW
+                            putExtra("open_new_task", true)
+                        }
+                        val shortcutInfo = ShortcutInfo.Builder(context, "new_task_shortcut")
+                            .setShortLabel("New Task")
+                            .setLongLabel("Add a New Task")
+                            .setIcon(ShortcutIcon.createWithResource(context, android.R.drawable.ic_menu_add))
+                            .setIntent(shortcutIntent)
+                            .build()
+                        shortcutManager.requestPinShortcut(shortcutInfo, null)
                     } else {
-                        sortedCounts.joinToString("\n") { "${it.key}: ${it.value}" }
+                        Toast.makeText(context, "Pinned shortcuts are not supported", Toast.LENGTH_SHORT).show()
                     }
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { showReportDialog = false }) {
-                    Text("OK")
+                } else {
+                    Toast.makeText(context, "Requires Android O or newer", Toast.LENGTH_SHORT).show()
                 }
             }
-        )
+            "Report" -> { showReportDialog = true }
+            else -> { /* no-op */ }
+        }
     }
 
     Column {
-        // First row: Added snooze options "2h" and "4h"
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly
+        // --- Main Row of Dynamic Buttons ---
+        // We show the extracted "displayButtons" in a FlowRow.
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            val firstRowOptions = listOf("10m", "30m", "1h", "2h", "3h", "4h")
-            firstRowOptions.forEach { option ->
-                ElevatedButton(onClick = {
-                    ButtonPressCounter.increment(context, option)
-                    when {
-                        option.endsWith("m") -> {
-                            val minutes = option.dropLast(1).toInt()
-                            onSnoozeMinutes(minutes)
-                        }
-                        option.endsWith("h") -> {
-                            onSnoozeHours(option.dropLast(1).toInt())
-                        }
-                    }
-                }) {
-                    Text(option)
+            displayButtons.forEach { button ->
+                // For buttons of type OTHER (functions), force a dark background and white text.
+                val buttonColor = if (button.type == ButtonType.OTHER) {
+                    Color(0xFF333333)
+                } else {
+                    // Snooze buttons keep their existing color coding.
+                    backgroundColorForButton(button)
                 }
-            }
-        }
-
-        Spacer(Modifier.height(4.dp))
-
-        // Second row: "1d", "2d", "4d", "7d"
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            val secondRowOptions = listOf("1d", "2d", "4d", "7d")
-            secondRowOptions.forEach { option ->
                 ElevatedButton(
-                    onClick = {
-                        ButtonPressCounter.increment(context, option)
-                        onSnoozeDays(option.dropLast(1).toInt())
-                    },
-                    colors = ButtonDefaults.elevatedButtonColors(containerColor = Color(0xFF8BC34A))
+                    onClick = { handleDynamicButtonClick(button) },
+                    colors = ButtonDefaults.elevatedButtonColors(containerColor = buttonColor)
                 ) {
-                    Text(option, color = Color.Black)
+                    Text(button.id, color = Color.White)
                 }
             }
         }
 
-        Spacer(Modifier.height(4.dp))
-
-        // Third row: "Mon", "Fri", "1p", "4p", and the Overflow menu.
+        // --- Overflow Menus for Remaining Buttons ---
         Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            ElevatedButton(
-                onClick = {
-                    ButtonPressCounter.increment(context, "Mon")
-                    val daysToAdd = nextDayOfWeek(Calendar.MONDAY)
-                    onSnoozeDays(daysToAdd)
-                },
-                colors = ButtonDefaults.elevatedButtonColors(containerColor = Color(0xFF67CFFF))
-            ) {
-                Text("Mon", color = Color.Black)
-            }
-            ElevatedButton(
-                onClick = {
-                    ButtonPressCounter.increment(context, "Fri")
-                    val daysToAdd = nextDayOfWeek(Calendar.FRIDAY)
-                    onSnoozeDays(daysToAdd)
-                },
-                colors = ButtonDefaults.elevatedButtonColors(containerColor = Color(0xFF67CFFF))
-            ) {
-                Text("Fri", color = Color.Black)
-            }
-            ElevatedButton(
-                onClick = {
-                    ButtonPressCounter.increment(context, "1p")
-                    onSnoozeTo1p()
-                },
-            ) {
-                Text("1p")
-            }
-            ElevatedButton(
-                onClick = {
-                    ButtonPressCounter.increment(context, "4p")
-                    onSnoozeTo4p()
-                },
-            ) {
-                Text("4p")
-            }
+            // Snooze Overflow Button labeled "Snoozes"
             Box {
-                var expanded by remember { mutableStateOf(false) }
-                IconButton(onClick = { expanded = true }) {
-                    Icon(
-                        imageVector = Icons.Default.MoreVert,
-                        contentDescription = "Overflow menu",
-                        tint = Color.White
-                    )
+                Button(
+                    onClick = { showSnoozeOverflow = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF121212))
+                ) {
+                    Text("Snoozes", color = Color.White)
                 }
                 DropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false }
+                    expanded = showSnoozeOverflow,
+                    onDismissRequest = { showSnoozeOverflow = false }
                 ) {
-                    DropdownMenuItem(
-                        text = { Text("7 Hours") },
-                        onClick = {
-                            ButtonPressCounter.increment(context, "7 Hours")
-                            expanded = false
-                            onSnoozeHours(7)
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("7p") },
-                        onClick = {
-                            ButtonPressCounter.increment(context, "7p")
-                            expanded = false
-                            onSnoozeTo7p()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("3 Days") },
-                        onClick = {
-                            ButtonPressCounter.increment(context, "3 Days")
-                            expanded = false
-                            onSnoozeDays(3)
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("5 Days") },
-                        onClick = {
-                            ButtonPressCounter.increment(context, "5 Days")
-                            expanded = false
-                            onSnoozeDays(5)
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("3 Weeks") },
-                        onClick = {
-                            ButtonPressCounter.increment(context, "3 Weeks")
-                            expanded = false
-                            onSnoozeDays(21)
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("5 Weeks") },
-                        onClick = {
-                            ButtonPressCounter.increment(context, "5 Weeks")
-                            expanded = false
-                            onSnoozeDays(35)
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("26 Weeks") },
-                        onClick = {
-                            ButtonPressCounter.increment(context, "26 Weeks")
-                            expanded = false
-                            onSnoozeDays(182)
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("High Priority") },
-                        onClick = {
-                            ButtonPressCounter.increment(context, "High Priority")
-                            expanded = false
-                            onHighPriority()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Remove Priority") },
-                        onClick = {
-                            ButtonPressCounter.increment(context, "Remove Priority")
-                            expanded = false
-                            onRemovePriority()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Remove All Priorities") },
-                        onClick = {
-                            ButtonPressCounter.increment(context, "Remove All Priorities")
-                            expanded = false
-                            onRemoveAllPriorities()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Delete") },
-                        onClick = {
-                            ButtonPressCounter.increment(context, "Delete")
-                            expanded = false
-                            onDelete()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Add New Task Shortcut") },
-                        onClick = {
-                            ButtonPressCounter.increment(context, "Add New Task Shortcut")
-                            expanded = false
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                val shortcutManager = context.getSystemService(ShortcutManager::class.java)
-                                if (shortcutManager.isRequestPinShortcutSupported) {
-                                    val shortcutIntent = Intent(context, MainActivity::class.java).apply {
-                                        action = Intent.ACTION_VIEW
-                                        putExtra("open_new_task", true)
-                                    }
-                                    val shortcutInfo = ShortcutInfo.Builder(context, "new_task_shortcut")
-                                        .setShortLabel("New Task")
-                                        .setLongLabel("Add a New Task")
-                                        .setIcon(ShortcutIcon.createWithResource(context, android.R.drawable.ic_menu_add))
-                                        .setIntent(shortcutIntent)
-                                        .build()
-                                    shortcutManager.requestPinShortcut(shortcutInfo, null)
-                                } else {
-                                    Toast.makeText(context, "Pinned shortcuts are not supported", Toast.LENGTH_SHORT).show()
-                                }
-                            } else {
-                                Toast.makeText(context, "Requires Android O or newer", Toast.LENGTH_SHORT).show()
+                    overflowSnoozes.forEach { button ->
+                        DropdownMenuItem(
+                            modifier = Modifier.background(backgroundColorForButton(button)),
+                            text = { 
+                                Text(
+                                    text = button.id,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = highContrastTextColor(backgroundColorForButton(button))
+                                )
+                            },
+                            onClick = {
+                                handleDynamicButtonClick(button)
+                                showSnoozeOverflow = false
                             }
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Report") },
-                        onClick = {
-                            ButtonPressCounter.increment(context, "Report")
-                            expanded = false
-                            showReportDialog = true
-                        }
-                    )
+                        )
+                    }
+                }
+            }
+            // Tag Menu remains unchanged; it already uses the updated TagMenu() implementation.
+            TagMenu(
+                onTagSelected = onAddTag
+            )
+            // Overflow Functions Button labeled "Functions"
+            Box {
+                Button(
+                    onClick = { showOtherOverflow = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF121212))
+                ) {
+                    Text("Functions", color = Color.White)
+                }
+                DropdownMenu(
+                    expanded = showOtherOverflow,
+                    onDismissRequest = { showOtherOverflow = false }
+                ) {
+                    overflowFunctions.forEach { button ->
+                        DropdownMenuItem(
+                            modifier = Modifier.background(backgroundColorForButton(button)),
+                            text = { 
+                                Text(
+                                    text = button.id,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = highContrastTextColor(backgroundColorForButton(button))
+                                )
+                            },
+                            onClick = {
+                                handleDynamicButtonClick(button)
+                                showOtherOverflow = false
+                            }
+                        )
+                    }
                 }
             }
         }
-        
-        Spacer(Modifier.height(4.dp))
 
-        // Weekly snooze row
+        // --- The Rest of the UI (New Task, Completed, Undo, Refresh, etc.) ---
         Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            val weekSnoozeOptions = listOf(2, 4, 8, 12, 16)
-            weekSnoozeOptions.forEach { w ->
-                ElevatedButton(onClick = {
-                    ButtonPressCounter.increment(context, "${w}w")
-                    onSnoozeDays(w * 7)
-                }) {
-                    Text("${w}w")
-                }
-            }
-        }
-        
-        Spacer(Modifier.height(4.dp))
-        
-        // Row containing "New Task" and "Completed"
-        Row(
-            Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
             ElevatedButton(
                 modifier = Modifier.height(96.dp),
                 onClick = {
-                    // Use clipboard content as default if not empty.
-                    newTaskText = TextFieldValue(clipboardManager.getText()?.text ?: "")
+                    val clipboardContent = clipboardManager.getText()?.text.orEmpty()
+                    newTaskText = if (clipboardContent.isNotEmpty()) {
+                        TextFieldValue(
+                            text = clipboardContent,
+                            selection = TextRange(0, clipboardContent.length)
+                        )
+                    } else {
+                        TextFieldValue("")
+                    }
                     showNewTaskDialog = true
                 },
                 colors = ButtonDefaults.elevatedButtonColors(containerColor = Color(0xFFFFC107))
             ) {
-                Text("New Task", color = Color.Black)
+                Text("New Task", color = Color.White)
             }
-
             Column(
                 modifier = Modifier.weight(1f)
             ) {
@@ -1844,9 +1701,10 @@ fun BottomButtons(
                     onClick = {
                         ButtonPressCounter.increment(context, "Completed")
                         onCompleted()
-                    }
+                    },
+                    colors = ButtonDefaults.elevatedButtonColors(containerColor = MaterialTheme.colorScheme.primary)
                 ) {
-                    Text("Completed (m)")
+                    Text("Completed (m)", color = highContrastTextColor(MaterialTheme.colorScheme.primary))
                 }
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(
@@ -1858,188 +1716,138 @@ fun BottomButtons(
                         onClick = {
                             ButtonPressCounter.increment(context, "Undo")
                             onUndo()
-                        }
+                        },
+                        colors = ButtonDefaults.elevatedButtonColors(containerColor = MaterialTheme.colorScheme.primary)
                     ) {
-                        Text("Undo (u)")
+                        Text("Undo (u)", color = highContrastTextColor(MaterialTheme.colorScheme.primary))
                     }
                     ElevatedButton(
                         modifier = Modifier.weight(1f),
                         onClick = {
                             ButtonPressCounter.increment(context, "Refresh")
                             onRefresh()
-                        }
+                        },
+                        colors = ButtonDefaults.elevatedButtonColors(containerColor = MaterialTheme.colorScheme.primary)
                     ) {
-                        Text("Refresh (r)")
+                        Text("Refresh (r)", color = highContrastTextColor(MaterialTheme.colorScheme.primary))
                     }
                 }
             }
         }
-        
-        Spacer(Modifier.height(4.dp))
-        
-        // (Optional) Second weekly snooze row (if still needed)
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            val weekSnoozeOptions = listOf(2, 4, 8, 12, 16)
-            weekSnoozeOptions.forEach { w ->
-                ElevatedButton(onClick = {
-                    ButtonPressCounter.increment(context, "${w}w")
-                    onSnoozeDays(w * 7)
-                }) {
-                    Text("${w}w")
+    }
+
+    // --- Report Dialog (unchanged) ---
+    if (showReportDialog) {
+        AlertDialog(
+            onDismissRequest = { showReportDialog = false },
+            title = { Text("Button Press Report") },
+            text = {
+                val countsMap = ButtonPressCounter.getAllCounts(context)
+                val sortedCounts = countsMap.entries.sortedByDescending { it.value }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 200.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = if (sortedCounts.isEmpty()) {
+                            "No button presses recorded."
+                        } else {
+                            sortedCounts.joinToString("\n") { "${it.key}: ${it.value}" }
+                        }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showReportDialog = false }) {
+                    Text("OK")
                 }
             }
-        }
-        
-        Spacer(Modifier.height(4.dp))
-        
-        // NEW: Row for the Tag Menu – this will display an icon that expands to list the tags.
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center
-        ) {
-            TagMenu(onTagSelected = onAddTag)
-        }
-        
-        Spacer(Modifier.height(4.dp))
-    }
-}
-
-fun doSnoozeMinutes(
-    minutes: Int,
-    reviewer: MarkdownReviewer,
-    selectedTask: TaskLine?,
-    history: MutableList<HistoryItem>,
-    refresh: () -> Unit,
-    selectNextTask: (TaskLine?) -> Unit,
-    dateFilter: String,
-    charFilter: String,
-    excludeHourlySnooze: Boolean
-) {
-    if (selectedTask != null) {
-        // Capture the filtered list BEFORE changing the task so we know its position.
-        val filteredBefore = applyFilters(
-            reviewer.lines,
-            dateFilter,
-            charFilter,
-            excludeHourlySnooze
         )
-        val currentIndex = filteredBefore.indexOfFirst { 
-            it.filePath == selectedTask.filePath && it.lineIndex == selectedTask.lineIndex 
+    }
+
+    // --- New Task Dialog with focus and selection ---
+    if (showNewTaskDialog) {
+        var newTaskPriority by remember { mutableStateOf(TaskPriority.Normal) }
+        // Create a FocusRequester for the OutlinedTextField
+        val focusRequester = remember { FocusRequester() }
+        // When the dialog opens, request focus and update the text selection.
+        LaunchedEffect(Unit) {
+            focusRequester.requestFocus()
+            newTaskText = newTaskText.copy(selection = TextRange(0, newTaskText.text.length))
         }
-
-        val oldCopy = selectedTask.copy()
-        val newText = reviewer.snoozeMinutes(selectedTask, minutes)
-        selectedTask.text = newText
-        val indexInReviewer = reviewer.lines.indexOf(selectedTask)
-        history.add(HistoryItem(indexInReviewer, oldCopy))
-        reviewer.saveLine(selectedTask, newText)
-
-        // Refresh tasks (this will update the filtered list)
-        refresh()
-
-        // After refresh, compute the new filtered list
-        val filteredAfter = applyFilters(
-            reviewer.lines,
-            dateFilter,
-            charFilter,
-            excludeHourlySnooze
+        AlertDialog(
+            onDismissRequest = { showNewTaskDialog = false },
+            title = { Text("New Task") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = newTaskText,
+                        onValueChange = { newTaskText = it },
+                        placeholder = { Text("Enter task details") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 100.dp)
+                            .focusRequester(focusRequester),
+                        singleLine = false,
+                        maxLines = 5
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(
+                                selected = (newTaskPriority == TaskPriority.High),
+                                onClick = { newTaskPriority = TaskPriority.High }
+                            )
+                            Text("High", color = Color.Black)
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(
+                                selected = (newTaskPriority == TaskPriority.Normal),
+                                onClick = { newTaskPriority = TaskPriority.Normal }
+                            )
+                            Text("Normal", color = Color.Black)
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(
+                                selected = (newTaskPriority == TaskPriority.Low),
+                                onClick = { newTaskPriority = TaskPriority.Low }
+                            )
+                            Text("Low", color = Color.Black)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.End,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        TextButton(onClick = { newTaskText = TextFieldValue("") }) {
+                            Text("Clear")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    reviewer.addNewTask(newTaskText.text, newTaskPriority)
+                    onRefresh()
+                    showNewTaskDialog = false
+                    newTaskText = TextFieldValue("")
+                    newTaskPriority = TaskPriority.Normal
+                }) {
+                    Text("Add")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNewTaskDialog = false }) {
+                    Text("Cancel")
+                }
+            }
         )
-
-        // Select the same index as before if available; otherwise, the last item.
-        val newSelection = when {
-            filteredAfter.isEmpty() -> null
-            currentIndex in filteredAfter.indices -> filteredAfter[currentIndex]
-            currentIndex >= filteredAfter.size -> filteredAfter.last()
-            else -> filteredAfter.first()
-        }
-        selectNextTask(newSelection)
-    }
-}
-
-fun nextDayOfWeek(dayOfWeek: Int): Int {
-    val cal = Calendar.getInstance()
-    val currentDay = cal.get(Calendar.DAY_OF_WEEK)
-    var daysToAdd = dayOfWeek - currentDay
-    if (daysToAdd <= 0) {
-        daysToAdd += 7
-    }
-    return daysToAdd
-}
-
-/**
- * Adds a new task to "New Tasks.md" at the top of the file with today's date.
- * The task text now includes a priority marker based on the isHighPriority value.
- */
-fun doAddNewTask(
-    reviewer: MarkdownReviewer,
-    taskText: String,
-    priority: TaskPriority // changed parameter type
-) {
-    val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-    val priorityMarker = when (priority) {
-        TaskPriority.High -> "⏫"
-        TaskPriority.Low -> "🔽"
-        TaskPriority.Normal -> ""  // No marker for normal priority
-    }
-    val lineToInsert = if (priorityMarker.isBlank()) {
-        "* [ ] $taskText 📅 $dateStr"
-    } else {
-        "* [ ] $taskText $priorityMarker 📅 $dateStr"
-    }
-
-    // The file "New Tasks.md" in the reviewer's directory path
-    val newTasksFile = File(reviewer.getDirectoryPath(), "New Tasks.md")
-    val allLines = if (newTasksFile.exists()) {
-        newTasksFile.readLines().toMutableList()
-    } else {
-        mutableListOf()
-    }
-
-    // Insert at the top of the file.
-    allLines.add(0, lineToInsert)
-    newTasksFile.writeText(allLines.joinToString("\n"))
-}
-
-/**
- * Updates selection by index, given the filteredTasks list
- */
-private fun setSelectedItemPosition(
-    selectedPos: Int,
-    filteredTasks: List<TaskLine>,
-    currentSelection: Pair<String, Int>?
-): Pair<String, Int>? {
-    val items = filteredTasks
-    // If no items, or the position is out of range, reset to -1
-    val newPosition = if (items.isEmpty()) {
-        -1
-    } else {
-        if (selectedPos < 0 || selectedPos >= items.size) 0 else selectedPos
-    }
-
-    // If we have a valid newPosition, pick the item at that position; otherwise null
-    return if (newPosition == -1) {
-        null
-    } else {
-        items[newPosition].filePath to items[newPosition].lineIndex
-    }
-}
-
-fun onItemRemoved(
-    position: Int,
-    filteredTasks: List<TaskLine>,
-    selectedFilePathAndLine: Pair<String, Int>?
-): Pair<String, Int>? {
-    return if (position == selectedFilePathAndLine?.second) {
-        setSelectedItemPosition(
-            selectedPos = position,
-            filteredTasks = filteredTasks,
-            currentSelection = selectedFilePathAndLine
-        )
-    } else {
-        selectedFilePathAndLine
     }
 }
 
@@ -2214,34 +2022,171 @@ val dynamicButtons = listOf(
     DynamicButton("2h", ButtonType.SNOOZE, 120),
     DynamicButton("3h", ButtonType.SNOOZE, 180),
     DynamicButton("4h", ButtonType.SNOOZE, 240),
-    // Other buttons might be declared as "OTHER"
-    DynamicButton("Mon", ButtonType.OTHER),
-    DynamicButton("Fri", ButtonType.OTHER),
-    DynamicButton("1p", ButtonType.OTHER),
-    DynamicButton("4p", ButtonType.OTHER),
-    DynamicButton("7 Hours", ButtonType.OTHER),
-    DynamicButton("7p", ButtonType.OTHER),
-    DynamicButton("3 Days", ButtonType.OTHER),
-    DynamicButton("5 Days", ButtonType.OTHER),
-    DynamicButton("3 Weeks", ButtonType.OTHER),
-    DynamicButton("5 Weeks", ButtonType.OTHER),
-    DynamicButton("26 Weeks", ButtonType.OTHER),
+    DynamicButton("7h", ButtonType.SNOOZE, 420),
+    DynamicButton("Mon", ButtonType.SNOOZE),
+    DynamicButton("Fri", ButtonType.SNOOZE),
+    DynamicButton("1p", ButtonType.SNOOZE),
+    DynamicButton("4p", ButtonType.SNOOZE),
+    DynamicButton("7p", ButtonType.SNOOZE),
+    // New day snoozes:
+    DynamicButton("1d", ButtonType.SNOOZE),
+    DynamicButton("2d", ButtonType.SNOOZE),
+    DynamicButton("3d", ButtonType.SNOOZE),
+    DynamicButton("4d", ButtonType.SNOOZE), // 4d added
+    DynamicButton("5d", ButtonType.SNOOZE),
+    DynamicButton("6d", ButtonType.SNOOZE), // 6d added
+    // Week snoozes:
+    DynamicButton("1w", ButtonType.SNOOZE),
+    DynamicButton("2w", ButtonType.SNOOZE),
+    DynamicButton("3w", ButtonType.SNOOZE),
+    DynamicButton("5w", ButtonType.SNOOZE),
+    DynamicButton("8w", ButtonType.SNOOZE),  // <-- new button for 8 weeks
+    DynamicButton("12w", ButtonType.SNOOZE), // <-- new button for 12 weeks
+    DynamicButton("26w", ButtonType.SNOOZE),
+    // Priority functions:
     DynamicButton("High Priority", ButtonType.OTHER),
     DynamicButton("Remove Priority", ButtonType.OTHER),
+    // This one will always go in overflow:
     DynamicButton("Remove All Priorities", ButtonType.OTHER),
+    // Other functions:
     DynamicButton("Delete", ButtonType.OTHER),
     DynamicButton("Add New Task Shortcut", ButtonType.OTHER),
     DynamicButton("Report", ButtonType.OTHER)
 )
 
-fun backgroundColorForButton(button: DynamicButton): Color {
-    return when {
-        button.type != ButtonType.SNOOZE -> Color.LightGray
-        // For snooze buttons, try to deduce the unit based on duration in minutes.
-        button.durationInMinutes == null -> Color.Gray
-        button.durationInMinutes < 60 -> Color(0xFFFFD54F) // minutes (yellowish)
-        button.durationInMinutes in 60 until 1440 -> Color(0xFFEF5350) // hours (redish)
-        button.durationInMinutes in 1440 until 10080 -> Color(0xFF66BB6A) // days (greenish)
-        else -> Color(0xFF42A5F5) // weeks or more (blueish)
+fun dynamicButtonSortKey(button: DynamicButton): Triple<Int, Int, String> {
+    val id = button.id.trim()
+    // Group 1: Minutes (e.g. "10m", "30m")
+    if (Regex("^\\d+m$", RegexOption.IGNORE_CASE).matches(id)) {
+        val num = id.dropLast(1).toIntOrNull() ?: Int.MAX_VALUE
+        return Triple(1, num, id)
     }
+    // Group 2: Hours (e.g. "1h", "2h")
+    if (Regex("^\\d+h$", RegexOption.IGNORE_CASE).matches(id)) {
+        val num = id.dropLast(1).toIntOrNull() ?: Int.MAX_VALUE
+        return Triple(2, num, id)
+    }
+    // Group 3: Specific times (e.g. "1p", "4p", "7p")
+    if (Regex("^\\d+p$", RegexOption.IGNORE_CASE).matches(id)) {
+        val num = id.dropLast(1).toIntOrNull() ?: Int.MAX_VALUE
+        return Triple(3, num, id)
+    }
+    // Group 4: Specific days (e.g. "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    val dayMap = mapOf("Mon" to 1, "Tue" to 2, "Wed" to 3, "Thu" to 4, "Fri" to 5, "Sat" to 6, "Sun" to 7)
+    if (dayMap.containsKey(id)) {
+        return Triple(4, dayMap[id] ?: Int.MAX_VALUE, id)
+    }
+    // Group 5: Days (e.g. "1d", "2d", "3d", "4d", etc. or "1 Days")
+    if (Regex("^\\d+(?:\\s*Days|d)$", RegexOption.IGNORE_CASE).matches(id)) {
+        val num = Regex("\\d+").find(id)?.value?.toIntOrNull() ?: Int.MAX_VALUE
+        return Triple(5, num, id)
+    }
+    // Group 6: Weeks (e.g. "3w", "5w", or "3 Weeks")
+    if (Regex("^\\d+w$", RegexOption.IGNORE_CASE).matches(id) ||
+        Regex("^\\d+\\s*Weeks$", RegexOption.IGNORE_CASE).matches(id)
+    ) {
+        val num = Regex("\\d+").find(id)?.value?.toIntOrNull() ?: Int.MAX_VALUE
+        return Triple(6, num, id)
+    }
+    // Group 7: All other buttons / functions
+    return Triple(7, 0, id)
+}
+
+fun backgroundColorForButton(button: DynamicButton): Color {
+    // For "days" snooze buttons, include "1d", "2d", "3d", "4d", "5d", and "6d"
+    if (button.id in listOf("1d", "2d", "3d", "4d", "5d", "6d")) {
+        return Color(0xFF1B5E20) // Dark green for day snoozes
+    }
+    // Minutes group
+    if (button.id.matches(Regex("^\\d+m$", RegexOption.IGNORE_CASE))) {
+        return Color(0xFF1A237E)
+    }
+    // Hours group
+    if (button.id.matches(Regex("^\\d+h$", RegexOption.IGNORE_CASE))) {
+        return Color(0xFFB71C1C)
+    }
+    // Specific times group (e.g. "1p", "4p", "7p")
+    if (button.id.matches(Regex("^\\d+p$", RegexOption.IGNORE_CASE))) {
+        return Color(0xFFF57C00)
+    }
+    // Weeks group
+    if (button.id.matches(Regex("^\\d+w$", RegexOption.IGNORE_CASE)) ||
+        button.id.matches(Regex("^\\d+\\s*Weeks$", RegexOption.IGNORE_CASE))
+    ) {
+        return Color(0xFF8E24AA)
+    }
+    // Specific days group (e.g. "Mon", "Tue", etc.)
+    if (button.id in listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")) {
+        return Color(0xFF1976D2) // Blue for day-of-week snoozes
+    }
+    // Default: for functions and any other category
+    return Color(0xFF424242)
+}
+
+fun doSnoozeMinutes(
+    minutes: Int,
+    reviewer: MarkdownReviewer,
+    selectedTask: TaskLine?,
+    history: MutableList<HistoryItem>,
+    refresh: () -> Unit,
+    selectNextTask: (TaskLine?) -> Unit,
+    dateFilter: String,
+    charFilter: String,
+    excludeHourlySnooze: Boolean
+) {
+    if (selectedTask != null) {
+        // Capture the filtered list BEFORE changing the task so we know its position.
+        val filteredBefore = applyFilters(
+            reviewer.lines,
+            dateFilter,
+            charFilter,
+            excludeHourlySnooze
+        )
+        val currentIndex = filteredBefore.indexOfFirst { 
+            it.filePath == selectedTask.filePath && it.lineIndex == selectedTask.lineIndex 
+        }
+
+        // Perform the snooze update using the snoozeMinutes function from MarkdownReviewer.
+        val oldCopy = selectedTask.copy()
+        val newText = reviewer.snoozeMinutes(selectedTask, minutes)
+        selectedTask.text = newText
+        val indexInReviewer = reviewer.lines.indexOf(selectedTask)
+        history.add(HistoryItem(indexInReviewer, oldCopy))
+        reviewer.saveLine(selectedTask, newText)
+
+        // Refresh tasks (this will update the filtered list)
+        refresh()
+
+        // After refresh, compute the new filtered list
+        val filteredAfter = applyFilters(
+            reviewer.lines,
+            dateFilter,
+            charFilter,
+            excludeHourlySnooze
+        )
+
+        // Select the same index as before if available; otherwise, the last item.
+        val newSelection = when {
+            filteredAfter.isEmpty() -> null
+            currentIndex in filteredAfter.indices -> filteredAfter[currentIndex]
+            currentIndex >= filteredAfter.size -> filteredAfter.last()
+            else -> filteredAfter.first()
+        }
+        selectNextTask(newSelection)
+    }
+}
+
+fun nextDayOfWeek(targetDay: Int): Int {
+    val calendar = Calendar.getInstance()
+    val today = calendar.get(Calendar.DAY_OF_WEEK)
+    var diff = targetDay - today
+    if (diff <= 0) {
+        diff += 7
+    }
+    return diff
+}
+
+// Helper function to compute high-contrast text color based on background luminance.
+fun highContrastTextColor(background: Color): Color {
+    return if (background.luminance() > 0.5f) Color.Black else Color.White
 }
